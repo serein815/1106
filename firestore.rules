@@ -5,7 +5,7 @@ service cloud.firestore {
     // users/{uid}/schedules/{scheduleId}: uid, title, date, time, endTime,
     //   location, category, createdAt, updatedAt.
     // users/{uid}/tasks/{taskId}: uid, title, date, priority, completed,
-    //   createdAt, updatedAt.
+    //   createdAt, updatedAt, kind, time, reminderEnabled.
     // Documents are private to their signed-in owner. Timestamps are written
     // with serverTimestamp(); createdAt cannot be changed after creation.
 
@@ -72,12 +72,16 @@ service cloud.firestore {
           'uid', 'title', 'date', 'priority', 'completed', 'createdAt', 'updatedAt'
         ]) &&
         data.keys().hasOnly([
-          'uid', 'title', 'date', 'priority', 'completed', 'createdAt', 'updatedAt'
+          'uid', 'title', 'date', 'priority', 'completed', 'createdAt', 'updatedAt',
+          'kind', 'time', 'reminderEnabled'
         ]) &&
         data.uid is string && data.uid.size() > 0 && data.uid.size() <= 128 &&
         data.title is string && data.title.size() > 0 && data.title.size() <= 100 &&
         isValidDate(data.date) &&
         data.priority in ['一般', '高優先'] && data.completed is bool &&
+        (!('kind' in data) || data.kind in ['task', 'reminder']) &&
+        (!('time' in data) || isValidTime(data.time)) &&
+        (!('reminderEnabled' in data) || data.reminderEnabled is bool) &&
         data.createdAt is timestamp && data.updatedAt is timestamp;
     }
 
