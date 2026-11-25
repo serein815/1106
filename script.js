@@ -1,6 +1,6 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js';
 import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js';
-import { addDoc, collection, deleteDoc, doc, getFirestore, onSnapshot, query, serverTimestamp, updateDoc, where } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js';
+import { addDoc, collection, deleteDoc, doc, getFirestore, onSnapshot, query, serverTimestamp, setDoc, updateDoc, where, writeBatch } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js';
 import { firebaseConfig } from './firebase-config.js';
 import { getTaiwanCalendarEvents, holidayCalendarSources } from './calendar-data.js';
 
@@ -10,7 +10,14 @@ const db = getFirestore(app);
 const provider = new GoogleAuthProvider();
 provider.setCustomParameters({ prompt: 'select_account' });
 
-const categoryNames = { work: '工作', life: '生活', focus: '專注' };
+const DEFAULT_CATEGORIES = [
+  { id: 'default', name: '未分類', color: '#0B4D3B', isBuiltIn: true, type: 'schedule' },
+  { id: 'life', name: '生活', color: '#81D8D0', isBuiltIn: true, type: 'schedule' },
+  { id: 'work', name: '工作', color: '#F6BD60', isBuiltIn: true, type: 'schedule' },
+  { id: 'task', name: '待辦事項', color: '#9B7BEA', isBuiltIn: true, type: 'task' },
+  { id: 'reminder', name: '提醒事項', color: '#8A8F98', isBuiltIn: true, type: 'reminder' }
+];
+const DEFAULT_CATEGORY = DEFAULT_CATEGORIES[0];
 const now = new Date();
 const formatDate = date => {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
@@ -18,10 +25,15 @@ const formatDate = date => {
 };
 const today = formatDate(now);
 let user = null;
+let userProfile = null;
 let schedules = [];
 let tasks = [];
+let categories = DEFAULT_CATEGORIES.map(category => ({ ...category }));
 let stopSchedules = null;
 let stopTasks = null;
+let stopCategories = null;
+let stopProfile = null;
+const categorySeedsInFlight = new Set();
 let statusTimer = null;
 let viewMonth = new Date(now.getFullYear(), now.getMonth(), 1, 12);
 
@@ -30,9 +42,14 @@ const scheduleModal = document.getElementById('schedule-modal');
 const taskModal = document.getElementById('task-modal');
 const scheduleForm = document.getElementById('schedule-form');
 const taskForm = document.getElementById('task-form');
+const categoriesModal = document.getElementById('categories-modal');
+const categoryAddForm = document.getElementById('category-add-form');
+const usernameModal = document.getElementById('username-modal');
+const usernameForm = document.getElementById('username-form');
 selectedDate.value = today;
 scheduleForm.elements.date.value = today;
 taskForm.elements.date.value = today;
+renderCategoryOptions();
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
@@ -57,13 +74,68 @@ function getErrorMessage(error) {
   return '操作沒有完成，請稍後再試一次。';
 }
 
+function categoryForId(id) {
+  return categories.find(category => category.id === id) || (id === 'focus'
+    ? { id: 'focus', name: '專注', color: DEFAULT_CATEGORY.color, type: 'schedule' }
+    : DEFAULT_CATEGORY);
+}
+
+function safeCategoryColor(category) {
+  return /^#[0-9a-f]{6}$/i.test(category?.color || '') ? category.color : DEFAULT_CATEGORY.color;
+}
+
+function renderCategoryOptions(selectedId = scheduleForm.elements.category.value || 'default') {
+  const select = document.getElementById('schedule-category');
+  const scheduleCategories = categories.filter(category => category.type === 'schedule');
+  const options = scheduleCategories.map(category => `<option value="${escapeHtml(category.id)}">${escapeHtml(category.name)}</option>`);
+  if (selectedId && !scheduleCategories.some(category => category.id === selectedId)) {
+    options.push(`<option value="${escapeHtml(selectedId)}">${selectedId === 'focus' ? '專注（舊分類）' : '其他分類（墨綠）'}</option>`);
+  }
+  select.innerHTML = options.join('');
+  select.value = selectedId && options.length ? selectedId : 'default';
+  if (!select.value) select.value = 'default';
+}
+
+function renderCategoryTags() {
+  const list = document.getElementById('tag-list');
+  list.innerHTML = categories.filter(category => category.type === 'schedule').map(category => `<span><i class="tag-dot" style="--tag-color:${safeCategoryColor(category)}"></i>${escapeHtml(category.name)}</span>`).join('');
+  document.getElementById('legend-schedule-marker').style.setProperty('--marker-color', safeCategoryColor(categoryForId('default')));
+  document.getElementById('legend-task-marker').style.setProperty('--marker-color', safeCategoryColor(categoryForId('task')));
+  document.getElementById('legend-reminder-marker').style.setProperty('--marker-color', safeCategoryColor(categoryForId('reminder')));
+}
+
+function renderCategoryManager() {
+  const list = document.getElementById('category-list');
+  if (!list) return;
+  list.innerHTML = categories.map(category => `<article class="category-row" data-id="${escapeHtml(category.id)}"><div class="category-row-heading"><span class="category-swatch" style="--category-color:${safeCategoryColor(category)}"></span><span>${category.type === 'task' ? '待辦' : category.type === 'reminder' ? '提醒' : '行程'}</span>${category.isBuiltIn ? '<small>預設</small>' : '<small>自訂</small>'}</div><label>分類名稱<input name="name" value="${escapeHtml(category.name)}" maxlength="32" required></label><label class="category-color-label">顏色<input name="color" type="color" value="${safeCategoryColor(category)}" aria-label="${escapeHtml(category.name)}顏色"></label><div class="category-row-actions"><button type="button" data-action="save-category">儲存</button>${category.isBuiltIn ? '' : '<button type="button" class="danger-action" data-action="delete-category">刪除</button>'}</div></article>`).join('');
+}
+
+async function seedDefaultCategories(currentUser, missingCategories) {
+  const batch = writeBatch(db);
+  for (const category of missingCategories) {
+    const reference = doc(db, 'users', currentUser.uid, 'categories', category.id);
+    batch.set(reference, {
+      uid: currentUser.uid,
+      name: category.name,
+      color: category.color,
+      isBuiltIn: category.isBuiltIn,
+      type: category.type,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+  }
+  await batch.commit();
+}
+
 function updateProfile() {
   const signIn = document.getElementById('sign-in-button');
   const signOutButtons = [document.getElementById('sign-out-button'), document.getElementById('top-sign-out')];
   const avatar = document.getElementById('current-avatar');
-  document.getElementById('current-name').textContent = user?.displayName || '尚未登入';
+  const displayName = userProfile?.name || user?.displayName || '尚未登入';
+  document.getElementById('current-name').textContent = displayName;
   document.getElementById('current-email').textContent = user?.email || '登入以同步行程';
   document.getElementById('sync-label').textContent = user ? '已連線同步' : '尚未登入';
+  document.getElementById('edit-username').hidden = !user;
   signIn.hidden = Boolean(user);
   signOutButtons.forEach(button => { button.hidden = !user; });
   if (user?.photoURL) {
@@ -73,11 +145,12 @@ function updateProfile() {
   } else {
     avatar.style.backgroundImage = '';
     avatar.classList.remove('photo-avatar');
-    avatar.textContent = user?.displayName?.trim()?.[0] || '日';
+    avatar.textContent = displayName.trim()?.[0] || '日';
   }
   const hour = new Date().getHours();
   const greeting = hour < 11 ? '早安' : hour < 18 ? '午安' : '晚安';
-  document.getElementById('welcome-title').innerHTML = `${user ? `${greeting}，${escapeHtml(user.displayName?.split(/\s+/)[0] || '朋友')}` : '安排今天，從容開始'} <span class="wave">✳</span>`;
+  const greetingName = userProfile?.name || user?.displayName?.split(/\s+/)[0] || '朋友';
+  document.getElementById('welcome-title').innerHTML = `${user ? `${greeting}，${escapeHtml(greetingName)}` : '安排今天，從容開始'} <span class="wave">✳</span>`;
 }
 
 function openModal(modal, form, title, item = null) {
@@ -89,7 +162,8 @@ function openModal(modal, form, title, item = null) {
     form.elements.time.value = item?.time || '15:00';
     form.elements.endTime.value = item?.endTime || '16:00';
     form.elements.location.value = item?.location || '';
-    form.elements.category.value = item?.category || 'work';
+    renderCategoryOptions(item?.category || 'default');
+    form.elements.category.value = item?.category || 'default';
   } else {
     form.elements.kind.value = item?.kind || 'task';
     form.elements.time.value = item?.time || '15:00';
@@ -110,10 +184,14 @@ function closeModal(modal) {
 function eventsForDate(date) {
   const civic = getTaiwanCalendarEvents(date);
   const personal = [
-    ...schedules.filter(item => item.date === date).map(item => ({ name: item.title, kind: 'schedule', time: item.time })),
+    ...schedules.filter(item => item.date === date).map(item => ({ name: item.title, kind: 'schedule', time: item.time, category: item.category })),
     ...tasks.filter(item => item.date === date).map(item => ({ name: item.title, kind: item.kind === 'reminder' ? 'reminder' : 'task', time: item.time, completed: item.completed }))
   ];
   return [...civic, ...personal];
+}
+
+function eventColor(event) {
+  return safeCategoryColor(categoryForId(event.kind === 'schedule' ? event.category : event.kind));
 }
 
 function renderCalendar() {
@@ -132,7 +210,7 @@ function renderCalendar() {
     const markers = [
       events.some(event => event.kind === 'holiday') ? '<i class="calendar-marker holiday-dot"></i>' : '',
       events.some(event => event.kind === 'festival') ? '<i class="calendar-marker festival-dot"></i>' : '',
-      events.some(event => ['schedule', 'task', 'reminder'].includes(event.kind)) ? '<i class="calendar-marker personal-dot"></i>' : ''
+      [...new Set(events.filter(event => ['schedule', 'task', 'reminder'].includes(event.kind)).map(eventColor))].slice(0, 5).map(color => `<i class="calendar-marker personal-dot" style="--marker-color:${color}"></i>`).join('')
     ].join('');
     const classes = ['calendar-day', isOtherMonth ? 'other-month' : '', dateKey === selectedDate.value ? 'selected' : '', dateKey === today ? 'is-today' : '', holiday ? 'has-holiday' : ''].filter(Boolean).join(' ');
     const aria = `${dateKey}${events.length ? `：${events.map(event => event.name).join('、')}` : ''}`;
@@ -150,7 +228,7 @@ function renderCalendarDayPanel() {
   const civic = events.filter(event => event.kind === 'holiday' || event.kind === 'festival');
   const personal = events.filter(event => ['schedule', 'task', 'reminder'].includes(event.kind));
   document.getElementById('calendar-holidays').innerHTML = civic.length ? civic.map(event => `<div class="calendar-special ${event.kind}"><span>${event.kind === 'holiday' ? '放假' : '節日'}</span>${escapeHtml(event.name)}</div>`).join('') : '<p class="calendar-empty-note">今天沒有國定假日或節日</p>';
-  document.getElementById('calendar-day-events').innerHTML = personal.length ? personal.sort((a, b) => String(a.time || '').localeCompare(String(b.time || ''))).map(event => `<div class="calendar-event-row ${event.completed ? 'completed' : ''}"><span class="calendar-event-time">${escapeHtml(event.time || '全天')}</span><span class="calendar-event-name">${event.kind === 'reminder' ? '提醒' : event.kind === 'task' ? '待辦' : '行程'}・${escapeHtml(event.name)}</span></div>`).join('') : '<p class="calendar-empty-note">尚無個人安排</p>';
+  document.getElementById('calendar-day-events').innerHTML = personal.length ? personal.sort((a, b) => String(a.time || '').localeCompare(String(b.time || ''))).map(event => `<div class="calendar-event-row ${event.completed ? 'completed' : ''}" style="--event-color:${eventColor(event)}"><span class="calendar-event-time">${escapeHtml(event.time || '全天')}</span><span class="calendar-event-name">${event.kind === 'reminder' ? '提醒' : event.kind === 'task' ? '待辦' : escapeHtml(categoryForId(event.category).name)}・${escapeHtml(event.name)}</span></div>`).join('') : '<p class="calendar-empty-note">尚無個人安排</p>';
 }
 
 function renderSchedules() {
@@ -158,10 +236,14 @@ function renderSchedules() {
   const items = schedules.filter(item => item.date === date).sort((a, b) => a.time.localeCompare(b.time));
   document.getElementById('schedule-date-label').textContent = date === today ? '今日行程' : `${date.slice(5).replace('-', ' / ')} 行程`;
   const list = document.getElementById('schedule-list');
-  list.innerHTML = items.length ? items.map(item => `<article class="schedule-item"><div class="schedule-time">${escapeHtml(item.time)}<small>至 ${escapeHtml(item.endTime)}</small></div><i class="timeline-node"></i><div class="event-card"><div class="event-title"><span>${escapeHtml(item.title)}</span><span class="event-category ${escapeHtml(item.category)}">${categoryNames[item.category] || '工作'}</span></div><div class="event-meta"><span>${escapeHtml(item.location || '尚未新增備註')}</span><span>${escapeHtml(item.time)} — ${escapeHtml(item.endTime)}</span></div><div class="item-actions"><button type="button" data-action="edit-schedule" data-id="${escapeHtml(item.id)}">編輯</button><button type="button" class="danger-action" data-action="delete-schedule" data-id="${escapeHtml(item.id)}">刪除</button></div></div></article>`).join('') : `<p class="empty-state">${user ? '這天還沒有行程，新增一個開始安排吧。' : '登入後即可建立並同步你的行程。'}</p>`;
+  list.innerHTML = items.length ? items.map(item => {
+    const category = categoryForId(item.category);
+    const color = safeCategoryColor(category);
+    return `<article class="schedule-item"><div class="schedule-time">${escapeHtml(item.time)}<small>至 ${escapeHtml(item.endTime)}</small></div><i class="timeline-node" style="--category-color:${color}"></i><div class="event-card"><div class="event-title"><span>${escapeHtml(item.title)}</span><span class="event-category" style="--category-color:${color}">${escapeHtml(category.name)}</span></div><div class="event-meta"><span>${escapeHtml(item.location || '尚未新增備註')}</span><span>${escapeHtml(item.time)} — ${escapeHtml(item.endTime)}</span></div><div class="item-actions"><button type="button" data-action="edit-schedule" data-id="${escapeHtml(item.id)}">編輯</button><button type="button" class="danger-action" data-action="delete-schedule" data-id="${escapeHtml(item.id)}">刪除</button></div></div></article>`;
+  }).join('') : `<p class="empty-state">${user ? '這天還沒有行程，新增一個開始安排吧。' : '登入後即可建立並同步你的行程。'}</p>`;
   document.getElementById('schedule-total').textContent = items.length;
   document.getElementById('schedule-count').textContent = String(items.length).padStart(2, '0');
-  document.getElementById('focus-total').textContent = items.filter(item => item.category === 'focus').length;
+  document.getElementById('focus-total').textContent = items.filter(item => !['default', 'life', 'work'].includes(item.category)).length;
 }
 
 function renderTasks() {
@@ -191,10 +273,13 @@ function render() {
 function subscribeToUserData(currentUser) {
   stopSchedules?.();
   stopTasks?.();
+  stopCategories?.();
   schedules = [];
   tasks = [];
+  categories = DEFAULT_CATEGORIES.map(category => ({ ...category }));
   const scheduleRef = collection(db, 'users', currentUser.uid, 'schedules');
   const taskRef = collection(db, 'users', currentUser.uid, 'tasks');
+  const categoryRef = collection(db, 'users', currentUser.uid, 'categories');
   stopSchedules = onSnapshot(query(scheduleRef, where('uid', '==', currentUser.uid)), snapshot => {
     schedules = snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
     render();
@@ -203,6 +288,61 @@ function subscribeToUserData(currentUser) {
     tasks = snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
     render();
   }, error => showStatus(getErrorMessage(error), 'error'));
+  stopCategories = onSnapshot(query(categoryRef, where('uid', '==', currentUser.uid)), snapshot => {
+    const savedCategories = snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+    const savedById = new Map(savedCategories.map(category => [category.id, category]));
+    categories = [
+      ...DEFAULT_CATEGORIES.map(category => ({ ...category, ...(savedById.get(category.id) || {}), id: category.id, isBuiltIn: true, type: category.type })),
+      ...savedCategories.filter(category => !DEFAULT_CATEGORIES.some(defaultCategory => defaultCategory.id === category.id))
+    ];
+    renderCategoryOptions(scheduleForm.elements.category.value || 'default');
+    renderCategoryTags();
+    renderCategoryManager();
+    render();
+    const missingCategories = DEFAULT_CATEGORIES.filter(category => !savedById.has(category.id));
+    if (missingCategories.length && !categorySeedsInFlight.has(currentUser.uid)) {
+      categorySeedsInFlight.add(currentUser.uid);
+      seedDefaultCategories(currentUser, missingCategories)
+        .catch(error => showStatus(getErrorMessage(error), 'error'))
+        .finally(() => categorySeedsInFlight.delete(currentUser.uid));
+    }
+  }, error => showStatus(getErrorMessage(error), 'error'));
+}
+
+function subscribeToUserProfile(currentUser) {
+  stopProfile?.();
+  userProfile = null;
+  updateProfile();
+  const profileRef = collection(db, 'users', currentUser.uid, 'profiles');
+  stopProfile = onSnapshot(query(profileRef, where('uid', '==', currentUser.uid)), snapshot => {
+    const profile = snapshot.docs[0]?.data() || null;
+    userProfile = profile;
+    updateProfile();
+    if (!profile?.name && !sessionStorage.getItem(`username-prompt:${currentUser.uid}`)) {
+      sessionStorage.setItem(`username-prompt:${currentUser.uid}`, 'shown');
+      usernameForm.elements.name.value = currentUser.displayName?.trim().slice(0, 24) || '';
+      usernameModal.classList.add('open');
+      usernameModal.setAttribute('aria-hidden', 'false');
+      usernameForm.elements.name.focus();
+    }
+  }, error => showStatus(getErrorMessage(error), 'error'));
+}
+
+async function saveUsername(name) {
+  const normalizedName = String(name || '').trim();
+  if (!user || !normalizedName || normalizedName.length > 24) return;
+  try {
+    await setDoc(doc(db, 'users', user.uid, 'profiles', 'main'), {
+      uid: user.uid,
+      name: normalizedName,
+      createdAt: userProfile?.createdAt || serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+    userProfile = { ...(userProfile || {}), name: normalizedName };
+    updateProfile();
+    closeModal(usernameModal);
+    showStatus(`用戶名已設定為「${normalizedName}」。`);
+  } catch (error) { showStatus(getErrorMessage(error), 'error'); }
 }
 
 function notificationKey(task) {
@@ -228,18 +368,37 @@ document.getElementById('sign-in-button').addEventListener('click', async () => 
   catch (error) { showStatus(getErrorMessage(error), 'error'); }
 });
 async function handleSignOut() {
+  if (!confirm('確定要登出行程管理系統嗎？未儲存的內容不會保留。')) return;
   try { await signOut(auth); showStatus('已安全登出。'); }
   catch (error) { showStatus(getErrorMessage(error), 'error'); }
 }
 document.getElementById('sign-out-button').addEventListener('click', handleSignOut);
 document.getElementById('top-sign-out').addEventListener('click', handleSignOut);
+document.getElementById('edit-username').addEventListener('click', () => {
+  if (!user) return;
+  usernameForm.elements.name.value = userProfile?.name || user.displayName || '';
+  usernameModal.classList.add('open');
+  usernameModal.setAttribute('aria-hidden', 'false');
+  usernameForm.elements.name.focus();
+});
+document.getElementById('close-username-modal').addEventListener('click', () => closeModal(usernameModal));
+document.getElementById('skip-username').addEventListener('click', () => closeModal(usernameModal));
+usernameModal.addEventListener('click', event => { if (event.target === usernameModal) closeModal(usernameModal); });
+usernameForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  await saveUsername(new FormData(usernameForm).get('name'));
+});
 onAuthStateChanged(auth, currentUser => {
   user = currentUser;
+  if (currentUser) subscribeToUserProfile(currentUser);
+  else { stopProfile?.(); stopProfile = null; userProfile = null; }
   updateProfile();
   if (user) subscribeToUserData(user);
   else {
-    stopSchedules?.(); stopTasks?.();
+    stopSchedules?.(); stopTasks?.(); stopCategories?.();
     schedules = []; tasks = [];
+    categories = DEFAULT_CATEGORIES.map(category => ({ ...category }));
+    renderCategoryOptions(); renderCategoryTags(); renderCategoryManager();
   }
   render();
 });
@@ -252,11 +411,64 @@ document.getElementById('calendar-add-task').addEventListener('click', () => ope
 document.getElementById('calendar-add-schedule').addEventListener('click', () => openModal(scheduleModal, scheduleForm, 'schedule-modal-title'));
 document.getElementById('close-schedule-modal').addEventListener('click', () => closeModal(scheduleModal));
 document.getElementById('close-task-modal').addEventListener('click', () => closeModal(taskModal));
-for (const modal of [scheduleModal, taskModal]) {
+document.getElementById('manage-categories').addEventListener('click', () => {
+  if (!user) { showStatus('請先使用 Google 登入，才能管理自己的分類。', 'error'); return; }
+  renderCategoryManager();
+  categoriesModal.classList.add('open');
+  categoriesModal.setAttribute('aria-hidden', 'false');
+});
+document.getElementById('close-categories-modal').addEventListener('click', () => closeModal(categoriesModal));
+for (const modal of [scheduleModal, taskModal, categoriesModal]) {
   modal.addEventListener('click', event => { if (event.target === modal) closeModal(modal); });
 }
 document.addEventListener('keydown', event => {
-  if (event.key === 'Escape') { closeModal(scheduleModal); closeModal(taskModal); }
+  if (event.key === 'Escape') { closeModal(scheduleModal); closeModal(taskModal); closeModal(categoriesModal); }
+});
+
+categoryAddForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!user) return;
+  const formData = new FormData(categoryAddForm);
+  const name = String(formData.get('name') || '').trim();
+  const color = String(formData.get('color') || '');
+  if (!name) return;
+  if (categories.some(category => category.type === 'schedule' && category.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+    showStatus('已有相同名稱的行程分類。', 'error'); return;
+  }
+  try {
+    await addDoc(collection(db, 'users', user.uid, 'categories'), {
+      uid: user.uid, name, color, type: 'schedule', isBuiltIn: false,
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+    });
+    categoryAddForm.reset();
+    showStatus(`已新增「${name}」分類。`);
+  } catch (error) { showStatus(getErrorMessage(error), 'error'); }
+});
+
+document.getElementById('category-list').addEventListener('click', async event => {
+  const button = event.target.closest('button[data-action]');
+  if (!button || !user) return;
+  const row = button.closest('.category-row');
+  const category = categories.find(item => item.id === row?.dataset.id);
+  if (!row || !category) return;
+  if (button.dataset.action === 'save-category') {
+    const name = String(row.querySelector('input[name="name"]').value || '').trim();
+    const color = String(row.querySelector('input[name="color"]').value || '');
+    if (!name) { showStatus('分類名稱不能空白。', 'error'); return; }
+    if (categories.some(item => item.id !== category.id && item.type === category.type && item.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+      showStatus('已有相同名稱的分類。', 'error'); return;
+    }
+    try {
+      await updateDoc(doc(db, 'users', user.uid, 'categories', category.id), { name, color, updatedAt: serverTimestamp() });
+      showStatus(`「${name}」分類已更新。`);
+    } catch (error) { showStatus(getErrorMessage(error), 'error'); }
+  }
+  if (button.dataset.action === 'delete-category' && !category.isBuiltIn && confirm(`刪除「${category.name}」分類？既有行程會改以墨綠色未分類顯示。`)) {
+    try {
+      await deleteDoc(doc(db, 'users', user.uid, 'categories', category.id));
+      showStatus(`「${category.name}」分類已刪除。`);
+    } catch (error) { showStatus(getErrorMessage(error), 'error'); }
+  }
 });
 
 scheduleForm.addEventListener('submit', async event => {

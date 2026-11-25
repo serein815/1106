@@ -5,11 +5,14 @@
 ## 功能
 
 - 使用 Google 帳戶登入與登出
+- 首次登入可選擇顯示用戶名，之後可隨時修改
 - 依日期查看、新增、編輯與刪除行程
 - 月曆檢視、日期切換，並標示台灣國定假日與節日
 - 依日期新增、編輯、刪除及勾選待辦與提醒事項，可設定時間
 - 允許瀏覽器通知後，可在網站開啟時收到到期提醒
 - 顯示每日行程數、未完成事項數與完成比例
+- 預設生活（Tiffany 藍）、工作（橘黃色）、未分類（墨綠色），並可新增分類及修改名稱、顏色
+- 月曆同步顯示行程、待辦（紫色）與提醒（灰色），顏色可在分類管理中自訂
 - 使用者資料存放於自己的 Firestore 路徑，規則限制只能由本人讀寫
 - 支援 GitHub Pages，無需建置步驟
 
@@ -21,6 +24,8 @@ Firebase 專案已啟用 Google 登入，並建立 Standard Cloud Firestore 預�
 
 - `users/{uid}/schedules/{scheduleId}`：行程資料
 - `users/{uid}/tasks/{taskId}`：待辦資料
+- `users/{uid}/categories/{categoryId}`：使用者可自訂的分類名稱與顏色
+- `users/{uid}/profiles/main`：使用者在系統內顯示的用戶名
 
 台灣國定假日採用人事行政總處公告的 2026、2027 政府行政機關辦公日曆；民俗節日依瀏覽器農曆曆法計算。政府辦公日曆適用範圍與企業規定不同，詳見[2026 公告](https://www.dgpa.gov.tw/information?pid=12574&uid=2)及[2027 公告](https://www.dgpa.gov.tw/information?pid=12983&uid=82)。
 

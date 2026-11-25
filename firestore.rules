@@ -63,7 +63,7 @@ service cloud.firestore {
         isValidDate(data.date) && isValidTime(data.time) && isValidTime(data.endTime) &&
         data.endTime > data.time &&
         data.location is string && data.location.size() <= 160 &&
-        data.category in ['work', 'life', 'focus'] &&
+        data.category is string && data.category.size() > 0 && data.category.size() <= 64 &&
         data.createdAt is timestamp && data.updatedAt is timestamp;
     }
 
@@ -82,6 +82,24 @@ service cloud.firestore {
         (!('kind' in data) || data.kind in ['task', 'reminder']) &&
         (!('time' in data) || isValidTime(data.time)) &&
         (!('reminderEnabled' in data) || data.reminderEnabled is bool) &&
+        data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function isValidCategory(data) {
+      return data.keys().hasAll(['uid', 'name', 'color', 'type', 'isBuiltIn', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'name', 'color', 'type', 'isBuiltIn', 'createdAt', 'updatedAt']) &&
+        data.uid is string && data.uid.size() > 0 && data.uid.size() <= 128 &&
+        data.name is string && data.name.size() > 0 && data.name.size() <= 64 &&
+        data.color is string && data.color.matches('^#[0-9A-Fa-f]{6}$') &&
+        data.type in ['schedule', 'task', 'reminder'] && data.isBuiltIn is bool &&
+        data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function isValidProfile(data) {
+      return data.keys().hasAll(['uid', 'name', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'name', 'createdAt', 'updatedAt']) &&
+        data.uid is string && data.uid.size() > 0 && data.uid.size() <= 128 &&
+        data.name is string && data.name.size() > 0 && data.name.size() <= 96 &&
         data.createdAt is timestamp && data.updatedAt is timestamp;
     }
 
@@ -111,6 +129,36 @@ service cloud.firestore {
         request.resource.data.createdAt == resource.data.createdAt &&
         request.resource.data.updatedAt == request.time;
       allow delete: if isOwner(userId) && isDocOwner(resource.data);
+    }
+
+    match /users/{userId}/categories/{categoryId} {
+      allow get, list: if isOwner(userId) && isDocOwner(resource.data);
+      allow create: if isOwner(userId) && uidUnchanged() &&
+        isDocOwner(request.resource.data) && isValidCategory(request.resource.data) &&
+        request.resource.data.createdAt == request.time &&
+        request.resource.data.updatedAt == request.time &&
+        (request.resource.data.isBuiltIn == (categoryId in ['default', 'life', 'work', 'task', 'reminder']));
+      allow update: if isOwner(userId) && uidNotModified() &&
+        isDocOwner(resource.data) && isDocOwner(request.resource.data) &&
+        isValidCategory(request.resource.data) &&
+        request.resource.data.uid == resource.data.uid &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.isBuiltIn == resource.data.isBuiltIn &&
+        request.resource.data.type == resource.data.type &&
+        request.resource.data.updatedAt == request.time;
+      allow delete: if isOwner(userId) && isDocOwner(resource.data) && resource.data.isBuiltIn == false;
+    }
+
+    match /users/{userId}/profiles/{profileId} {
+      allow get, list: if isOwner(userId) && isDocOwner(resource.data);
+      allow create: if isOwner(userId) && profileId == 'main' && uidUnchanged() &&
+        isDocOwner(request.resource.data) && isValidProfile(request.resource.data) &&
+        request.resource.data.createdAt == request.time && request.resource.data.updatedAt == request.time;
+      allow update: if isOwner(userId) && profileId == 'main' && uidNotModified() &&
+        isDocOwner(resource.data) && isDocOwner(request.resource.data) && isValidProfile(request.resource.data) &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.updatedAt == request.time;
+      allow delete: if false;
     }
 
     match /{document=**} {
