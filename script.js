@@ -46,6 +46,9 @@ const categoriesModal = document.getElementById('categories-modal');
 const categoryAddForm = document.getElementById('category-add-form');
 const usernameModal = document.getElementById('username-modal');
 const usernameForm = document.getElementById('username-form');
+const appearanceModal = document.getElementById('appearance-modal');
+const appearanceForm = document.getElementById('appearance-form');
+const DEFAULT_BACKGROUND_COLOR = '#f2f8fc';
 selectedDate.value = today;
 scheduleForm.elements.date.value = today;
 taskForm.elements.date.value = today;
@@ -62,6 +65,45 @@ function showStatus(message, kind = 'info') {
   box.hidden = false;
   clearTimeout(statusTimer);
   statusTimer = setTimeout(() => { box.hidden = true; }, 6500);
+}
+
+function backgroundStorageKey() {
+  return `daybook-background:${user?.uid || 'guest'}`;
+}
+
+function applyBackground(color = DEFAULT_BACKGROUND_COLOR) {
+  const safeColor = /^#[0-9a-f]{6}$/i.test(color) ? color : DEFAULT_BACKGROUND_COLOR;
+  document.documentElement.style.setProperty('--paper', safeColor);
+  document.body.style.backgroundColor = safeColor;
+  document.body.style.backgroundImage = 'none';
+}
+
+function loadBackgroundPreference() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(backgroundStorageKey()) || '{}');
+    applyBackground(saved.color);
+  } catch (error) {
+    applyBackground();
+    console.warn('無法讀取背景設定。', error);
+  }
+}
+
+function updateBackgroundPreview() {
+  const preview = document.getElementById('background-preview');
+  const color = appearanceForm.elements.backgroundColor.value;
+  preview.style.setProperty('--preview-color', color);
+  preview.style.setProperty('--preview-image', 'none');
+  preview.querySelector('span').textContent = '背景預覽';
+}
+
+function openAppearanceSettings() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(backgroundStorageKey()) || '{}'); }
+  catch { saved = {}; }
+  appearanceForm.elements.backgroundColor.value = /^#[0-9a-f]{6}$/i.test(saved.color || '') ? saved.color : DEFAULT_BACKGROUND_COLOR;
+  updateBackgroundPreview();
+  appearanceModal.classList.add('open');
+  appearanceModal.setAttribute('aria-hidden', 'false');
 }
 
 function getErrorMessage(error) {
@@ -389,6 +431,21 @@ document.getElementById('edit-username').addEventListener('click', () => {
   usernameModal.setAttribute('aria-hidden', 'false');
   usernameForm.elements.name.focus();
 });
+document.getElementById('open-appearance').addEventListener('click', openAppearanceSettings);
+document.getElementById('close-appearance').addEventListener('click', () => closeModal(appearanceModal));
+appearanceForm.elements.backgroundColor.addEventListener('input', updateBackgroundPreview);
+appearanceForm.addEventListener('submit', event => {
+  event.preventDefault();
+  const preference = { color: appearanceForm.elements.backgroundColor.value };
+  try {
+    localStorage.setItem(backgroundStorageKey(), JSON.stringify(preference));
+    applyBackground(preference.color);
+    closeModal(appearanceModal);
+    showStatus('背景顏色已儲存。');
+  } catch (error) {
+    showStatus('背景顏色儲存失敗，請確認瀏覽器允許本機儲存空間。', 'error');
+  }
+});
 document.getElementById('close-username-modal').addEventListener('click', () => closeModal(usernameModal));
 document.getElementById('skip-username').addEventListener('click', () => closeModal(usernameModal));
 usernameModal.addEventListener('click', event => { if (event.target === usernameModal) closeModal(usernameModal); });
@@ -398,6 +455,7 @@ usernameForm.addEventListener('submit', async event => {
 });
 onAuthStateChanged(auth, currentUser => {
   user = currentUser;
+  loadBackgroundPreference();
   if (currentUser) subscribeToUserProfile(currentUser);
   else { stopProfile?.(); stopProfile = null; userProfile = null; }
   updateProfile();
@@ -426,11 +484,11 @@ document.getElementById('manage-categories').addEventListener('click', () => {
   categoriesModal.setAttribute('aria-hidden', 'false');
 });
 document.getElementById('close-categories-modal').addEventListener('click', () => closeModal(categoriesModal));
-for (const modal of [scheduleModal, taskModal, categoriesModal]) {
+for (const modal of [scheduleModal, taskModal, categoriesModal, appearanceModal]) {
   modal.addEventListener('click', event => { if (event.target === modal) closeModal(modal); });
 }
 document.addEventListener('keydown', event => {
-  if (event.key === 'Escape') { closeModal(scheduleModal); closeModal(taskModal); closeModal(categoriesModal); }
+  if (event.key === 'Escape') { closeModal(scheduleModal); closeModal(taskModal); closeModal(categoriesModal); closeModal(appearanceModal); }
 });
 
 categoryAddForm.addEventListener('submit', async event => {
