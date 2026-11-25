@@ -540,7 +540,9 @@ taskForm.addEventListener('submit', async event => {
       localStorage.removeItem(notificationKey({ ...payload, id }));
     } else await addDoc(collection(db, 'users', user.uid, 'tasks'), { ...payload, createdAt: serverTimestamp() });
     closeModal(taskModal);
-    if (reminderEnabled && (!('Notification' in window) || Notification.permission !== 'granted')) {
+    if (reminderEnabled && !('Notification' in window)) {
+      showStatus('事項已儲存；目前瀏覽器不支援桌面通知，請用 Chrome 或 Edge 開啟網站，才能在電腦右下角收到提醒。');
+    } else if (reminderEnabled && Notification.permission !== 'granted') {
       showStatus('事項已儲存；請允許瀏覽器與 Windows 桌面通知，時間到才會在右下角提醒。');
     } else showStatus(id ? '事項已更新。' : '事項已新增。');
   } catch (error) { showStatus(getErrorMessage(error), 'error'); }
