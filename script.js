@@ -276,13 +276,21 @@ scheduleForm.addEventListener('submit', async event => {
     category: String(data.get('category')),
     updatedAt: serverTimestamp()
   };
+  const submitButton = scheduleForm.querySelector('[type="submit"]');
+  const originalSubmitLabel = submitButton.innerHTML;
+  submitButton.disabled = true;
+  submitButton.textContent = '儲存中…';
   try {
     const id = String(data.get('id') || '');
     if (id) await updateDoc(doc(db, 'users', user.uid, 'schedules', id), payload);
     else await addDoc(collection(db, 'users', user.uid, 'schedules'), { ...payload, createdAt: serverTimestamp() });
     closeModal(scheduleModal);
-    showStatus(id ? '行程已更新。' : '行程已新增。');
+    showStatus(id ? '行程已更新。' : '行程已新增，已加入月曆。');
   } catch (error) { showStatus(getErrorMessage(error), 'error'); }
+  finally {
+    submitButton.disabled = false;
+    submitButton.innerHTML = originalSubmitLabel;
+  }
 });
 
 taskForm.addEventListener('submit', async event => {
