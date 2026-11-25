@@ -168,7 +168,7 @@ function openModal(modal, form, title, item = null) {
     form.elements.kind.value = item?.kind || 'task';
     form.elements.time.value = item?.time || '15:00';
     form.elements.priority.value = item?.priority || '一般';
-    form.elements.reminderEnabled.checked = Boolean(item?.reminderEnabled);
+    form.elements.reminderEnabled.checked = item ? Boolean(item.reminderEnabled) : true;
   }
   document.getElementById(title).textContent = item ? (form === scheduleForm ? '編輯行程' : '編輯事項') : (form === scheduleForm ? '安排一個新行程' : '新增待辦／提醒');
   modal.classList.add('open');
@@ -356,9 +356,17 @@ function checkDueReminders() {
     if (!task.reminderEnabled || task.completed || !task.date || !task.time) continue;
     const dueAt = new Date(`${task.date}T${task.time}:00`).getTime();
     const key = notificationKey(task);
-    if (nowMs >= dueAt && nowMs - dueAt < 5 * 60_000 && !localStorage.getItem(key)) {
-      new Notification(task.kind === 'reminder' ? '行程提醒' : '待辦提醒', { body: `${task.time}・${task.title}`, tag: key });
-      localStorage.setItem(key, 'sent');
+    if (nowMs >= dueAt && nowMs - dueAt < 24 * 60 * 60_000 && !localStorage.getItem(key)) {
+      try {
+        const notification = new Notification(task.kind === 'reminder' ? '提醒事項' : '待辦事項', {
+          body: `${task.time}・${task.title}`,
+          tag: key
+        });
+        notification.onclick = () => { window.focus(); notification.close(); };
+        localStorage.setItem(key, 'sent');
+      } catch (error) {
+        console.warn('無法顯示桌面通知。', error);
+      }
     }
   }
 }
@@ -533,7 +541,7 @@ taskForm.addEventListener('submit', async event => {
     } else await addDoc(collection(db, 'users', user.uid, 'tasks'), { ...payload, createdAt: serverTimestamp() });
     closeModal(taskModal);
     if (reminderEnabled && (!('Notification' in window) || Notification.permission !== 'granted')) {
-      showStatus('事項已儲存；請允許瀏覽器通知，才能收到時間提醒。');
+      showStatus('事項已儲存；請允許瀏覽器與 Windows 桌面通知，時間到才會在右下角提醒。');
     } else showStatus(id ? '事項已更新。' : '事項已新增。');
   } catch (error) { showStatus(getErrorMessage(error), 'error'); }
 });
